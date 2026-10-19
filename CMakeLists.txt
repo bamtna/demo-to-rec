@@ -1,0 +1,92 @@
+cmake_minimum_required(VERSION 3.20)
+project(demo-to-rec LANGUAGES C CXX)
+
+if(CMAKE_SOURCE_DIR STREQUAL PROJECT_SOURCE_DIR)
+	set(DEMO_TO_REC_TOP_LEVEL ON)
+else()
+	set(DEMO_TO_REC_TOP_LEVEL OFF)
+endif()
+
+option(DEMO_TO_REC_BUILD_CLI "Build the demo-to-rec command line tool" ${DEMO_TO_REC_TOP_LEVEL})
+option(DEMO_TO_REC_BUILD_TESTS "Build the tests" ${DEMO_TO_REC_TOP_LEVEL})
+option(DEMO_TO_REC_BZIP2 ".rec.bz2 support (fetches bzip2)" ON)
+set(DEMO_TO_REC_CSSDEMO_DIR "${PROJECT_SOURCE_DIR}/../css-demo-parser" CACHE PATH "css-demo-parser checkout, fetched if missing")
+set(DEMO_TO_REC_TEST_DEMO_DIRS "${DEMO_TO_REC_CSSDEMO_DIR}/bin/Debug" CACHE STRING "Folders of demos for the demos test")
+set(DEMO_TO_REC_GAME_DIR "" CACHE PATH "cstrike folder for the demos and validate tests")
+set(DEMO_TO_REC_REC_CORPUS "" CACHE PATH "Folder of .rec files for the rec_corpus test")
+
+include(FetchContent)
+
+if(NOT TARGET cssdemo::cssdemo)
+	if(EXISTS "${DEMO_TO_REC_CSSDEMO_DIR}/CMakeLists.txt")
+		add_subdirectory("${DEMO_TO_REC_CSSDEMO_DIR}" "${CMAKE_BINARY_DIR}/cssdemo" EXCLUDE_FROM_ALL)
+	else()
+		FetchContent_Declare(cssdemo GIT_REPOSITORY https://github.com/sockfish/css-demo-parser.git GIT_TAG master)
+		FetchContent_MakeAvailable(cssdemo)
+	endif()
+endif()
+
+if(DEMO_TO_REC_BZIP2)
+	FetchContent_Declare(bzip2 GIT_REPOSITORY https://sourceware.org/git/bzip2.git GIT_TAG bzip2-1.0.8 GIT_SHALLOW TRUE)
+	FetchContent_MakeAvailable(bzip2)
+	add_library(demo_to_rec_bzip2 STATIC
+		${bzip2_SOURCE_DIR}/blocksort.c
+		${bzip2_SOURCE_DIR}/bzlib.c
+		${bzip2_SOURCE_DIR}/compress.c
+		${bzip2_SOURCE_DIR}/crctable.c
+		${bzip2_SOURCE_DIR}/decompress.c
+		${bzip2_SOURCE_DIR}/huffman.c
+		${bzip2_SOURCE_DIR}/randtable.c)
+	target_include_directories(demo_to_rec_bzip2 PUBLIC ${bzip2_SOURCE_DIR})
+	target_compile_definitions(demo_to_rec_bzip2 PUBLIC BZ_NO_STDIO)
+	if(MSVC)
+		target_compile_definitions(demo_to_rec_bzip2 PRIVATE _CRT_SECURE_NO_WARNINGS)
+	endif()
+endif()
+
+function(demo_to_rec_warnings target)
+	if(MSVC)
+		target_compile_options(${target} PRIVATE /W4 /permissive- /utf-8)
+	else()
+		target_compile_options(${target} PRIVATE -Wall -Wextra)
+	endif()
+endfunction()
+
+add_library(rec STATIC src/rec/Replay.cpp src/rec/Replay.h)
+add_library(demo_to_rec::rec ALIAS rec)
+target_include_directories(rec PUBLIC $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/src>)
+target_compile_features(rec PUBLIC cxx_std_20)
+demo_to_rec_warnings(rec)
+if(DEMO_TO_REC_BZIP2)
+	target_link_libraries(rec PRIVATE demo_to_rec_bzip2)
+	target_compile_definitions(rec PRIVATE REC_HAS_BZIP2)
+endif()
+
+file(GLOB DEMO_TO_REC_SOURCES CONFIGURE_DEPENDS src/demo_to_rec/*.cpp src/demo_to_rec/*.h)
+add_library(demo_to_rec STATIC ${DEMO_TO_REC_SOURCES})
+add_library(demo_to_rec::demo_to_rec ALIAS demo_to_rec)
+target_include_directories(demo_to_rec PUBLIC $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/src>)
+target_link_libraries(demo_to_rec PUBLIC rec cssdemo::cssdemo)
+demo_to_rec_warnings(demo_to_rec)
+
+if(DEMO_TO_REC_BUILD_CLI)
+	add_executable(demo-to-rec src/main.cpp)
+	target_link_libraries(demo-to-rec PRIVATE demo_to_rec)
+	demo_to_rec_warnings(demo-to-rec)
+endif()
+
+if(DEMO_TO_REC_BUILD_TESTS)
+	enable_testing()
+	add_executable(demo-to-rec-tests tests/tests.cpp)
+	target_link_libraries(demo-to-rec-tests PRIVATE demo_to_rec)
+	demo_to_rec_warnings(demo-to-rec-tests)
+	set(fixtures "${PROJECT_SOURCE_DIR}/tests/fixtures")
+	add_test(NAME rec_reader COMMAND demo-to-rec-tests rec_reader "${fixtures}")
+	add_test(NAME rec_writer COMMAND demo-to-rec-tests rec_writer "${fixtures}")
+	add_test(NAME rec_corpus COMMAND demo-to-rec-tests rec_corpus "${DEMO_TO_REC_REC_CORPUS}")
+	add_test(NAME interpolation COMMAND demo-to-rec-tests interpolation)
+	add_test(NAME segments COMMAND demo-to-rec-tests segments)
+	add_test(NAME demos COMMAND demo-to-rec-tests demos ${DEMO_TO_REC_TEST_DEMO_DIRS} ${DEMO_TO_REC_GAME_DIR})
+	add_test(NAME validate COMMAND demo-to-rec-tests validate "${DEMO_TO_REC_GAME_DIR}")
+	set_tests_properties(rec_corpus demos validate PROPERTIES SKIP_RETURN_CODE 77)
+endif()

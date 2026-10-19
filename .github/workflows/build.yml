@@ -1,0 +1,58 @@
+name: build
+
+on:
+  push:
+    tags: ['v*']
+    branches: ['**']
+  pull_request:
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            name: windows-x64
+            exe: build/Release/demo-to-rec.exe
+          - os: ubuntu-latest
+            name: linux-x64
+            exe: build/demo-to-rec
+          - os: macos-latest
+            name: macos-arm64
+            exe: build/demo-to-rec
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: configure
+        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+      - name: build
+        run: cmake --build build --config Release --parallel
+      - name: test
+        run: ctest --test-dir build -C Release --output-on-failure
+      - name: package
+        shell: bash
+        run: |
+          mkdir dist
+          cp "${{ matrix.exe }}" dist/
+          cp README.md dist/
+          cd dist && cmake -E tar cf ../demo-to-rec-${{ matrix.name }}.zip --format=zip .
+      - uses: actions/upload-artifact@v4
+        with:
+          name: demo-to-rec-${{ matrix.name }}
+          path: demo-to-rec-${{ matrix.name }}.zip
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*.zip
